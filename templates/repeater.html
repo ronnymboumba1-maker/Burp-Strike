@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% set active = 'repeater' %}
+{% block title %}Repeater — Burp-Like Web{% endblock %}
+{% block page_title %}🔁 Repeater{% endblock %}
+
+{% block content %}
+<div class="repeater-grid">
+    <div class="card">
+        <div class="card-header"><h2>📤 Requête</h2></div>
+        <div class="card-body">
+            <div class="form-row">
+                <label>Méthode</label>
+                <select id="rep-method" class="input">
+                    <option>GET</option><option>POST</option><option>PUT</option>
+                    <option>DELETE</option><option>PATCH</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>URL</label>
+                <input type="text" id="rep-url" class="input" placeholder="https://example.com/api">
+            </div>
+            <div class="form-row">
+                <label>Headers (JSON)</label>
+                <textarea id="rep-headers" rows="5" class="input">{}</textarea>
+            </div>
+            <div class="form-row">
+                <label>Body</label>
+                <textarea id="rep-body" rows="6" class="input"></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="sendRepeater()">📤 Envoyer</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><h2>📥 Réponse</h2></div>
+        <div class="card-body">
+            <div id="rep-response">
+                <div class="empty-state">En attente d'envoi...</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function sendRepeater() {
+    let headers;
+    try { headers = JSON.parse(document.getElementById('rep-headers').value); }
+    catch (e) { alert('Headers JSON invalide'); return; }
+
+    const payload = {
+        method: document.getElementById('rep-method').value,
+        url: document.getElementById('rep-url').value,
+        headers,
+        body: document.getElementById('rep-body').value,
+    };
+
+    document.getElementById('rep-response').innerHTML = '<div class="loading">Envoi en cours...</div>';
+
+    try {
+        const r = await fetch('/api/repeater/send', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (d.error) {
+            document.getElementById('rep-response').innerHTML =
+                `<div class="error">❌ ${escapeHtml(d.error)}</div>`;
+            return;
+        }
+        document.getElementById('rep-response').innerHTML = `
+            <div class="kv"><strong>Status:</strong> <span class="status status-${Math.floor(d.status/100)}xx">${d.status}</span></div>
+            <div class="kv"><strong>Size:</strong> ${d.size} bytes</div>
+            <div class="kv"><strong>Time:</strong> ${d.time.toFixed(3)}s</div>
+            <h4>Headers</h4>
+            <pre class="code-block">${formatHeaders(d.headers)}</pre>
+            <h4>Body</h4>
+            <pre class="code-block ${d.body_kind}">${escapeHtml(d.body)}</pre>
+        `;
+    } catch (e) {
+        document.getElementById('rep-response').innerHTML = `<div class="error">❌ ${escapeHtml(e.message)}</div>`;
+    }
+}
+
+function formatHeaders(h) {
+    return Object.entries(h).map(([k, v]) => `${k}: ${v}`).join('\n');
+}
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+</script>
+{% endblock %}
