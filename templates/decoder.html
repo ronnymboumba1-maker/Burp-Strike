@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% set active = 'decoder' %}
+{% block title %}Decoder — Burp-Like Web{% endblock %}
+{% block page_title %}🔤 Decoder{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header"><h2>📝 Input</h2></div>
+    <div class="card-body">
+        <textarea id="dec-input" rows="6" class="input" placeholder="Colle ton texte ici..."></textarea>
+        <div class="button-row">
+            <button class="btn" onclick="runDecoder('url_encode')">URL Encode</button>
+            <button class="btn" onclick="runDecoder('url_decode')">URL Decode</button>
+            <button class="btn" onclick="runDecoder('b64_encode')">Base64 Encode</button>
+            <button class="btn" onclick="runDecoder('b64_decode')">Base64 Decode</button>
+            <button class="btn" onclick="runDecoder('hex_encode')">Hex Encode</button>
+            <button class="btn" onclick="runDecoder('hex_decode')">Hex Decode</button>
+            <button class="btn" onclick="runDecoder('html_encode')">HTML Encode</button>
+            <button class="btn" onclick="runDecoder('html_decode')">HTML Decode</button>
+            <button class="btn" onclick="runDecoder('jwt_decode')">JWT Decode</button>
+            <button class="btn" onclick="runDecoder('md5')">MD5</button>
+            <button class="btn" onclick="runDecoder('sha1')">SHA1</button>
+            <button class="btn" onclick="runDecoder('sha256')">SHA256</button>
+            <button class="btn btn-primary" onclick="runDecoder('auto')">🔓 Auto</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>📤 Output</h2></div>
+    <div class="card-body">
+        <pre id="dec-output" class="code-block">(résultat)</pre>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function runDecoder(action) {
+    const text = document.getElementById('dec-input').value;
+    if (!text) return;
+    const r = await fetch('/api/decode', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text, action}),
+    });
+    const d = await r.json();
+    document.getElementById('dec-output').textContent =
+        d.error ? '❌ ' + d.error : d.result;
+}
+</script>
+{% endblock %}
