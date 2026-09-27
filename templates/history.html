@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% set active = 'history' %}
+{% block title %}History — Burp-Like Web{% endblock %}
+{% block page_title %}📜 Historique{% endblock %}
+
+{% block topbar_actions %}
+<a href="/api/export/json" class="btn">📥 JSON</a>
+<a href="/api/export/html" class="btn">📄 HTML</a>
+<button class="btn btn-danger" onclick="clearHistory()">🗑️ Effacer</button>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-body">
+        <div class="filters-row">
+            <input type="text" id="f-search" placeholder="🔍 Rechercher..." class="input">
+            <select id="f-method" class="input">
+                <option value="">Toutes méthodes</option>
+                <option>GET</option><option>POST</option><option>PUT</option>
+                <option>DELETE</option><option>PATCH</option>
+            </select>
+            <input type="text" id="f-status" placeholder="Status" class="input small">
+            <input type="text" id="f-host" placeholder="Host" class="input">
+            <button class="btn" onclick="loadHistory()">Appliquer</button>
+        </div>
+    </div>
+</div>
+
+<div class="split-view">
+    <div class="list-panel">
+        <table class="data-table" id="history-table">
+            <thead>
+                <tr>
+                    <th>ID</th><th>Method</th><th>Host</th><th>Path</th>
+                    <th>Status</th><th>Size</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <div class="detail-panel" id="detail-panel">
+        <div class="empty-state">Sélectionne une requête</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadHistory() {
+    const params = new URLSearchParams({
+        method: document.getElementById('f-method').value,
+        status: document.getElementById('f-status').value,
+        host: document.getElementById('f-host').value,
+        search: document.getElementById('f-search').value,
+    });
+    const r = await fetch('/api/requests?' + params);
+    const rows = await r.json();
+    const tbody = document.querySelector('#history-table tbody');
+    tbody.innerHTML = rows.map(row => `
+        <tr onclick="loadDetail(${row.id})">
+            <td>${row.id}</td>
+            <td><span class="method method-${row.method.toLowerCase()}">${row.method}</span></td>
+            <td>${escapeHtml(row.host)}</td>
+            <td>${escapeHtml(row.path)}</td>
+            <td><span class="status status-${Math.floor(row.status/100)}xx">${row.status}</span></td>
+            <td>${row.size}b</td>
+        </tr>
+    `).join('');
+}
+
+async function loadDetail(id) {
+    const r = await fetch('/api/request/' + id);
+    const d = await r.json();
+    const panel = document.getElementById('detail-panel');
+    panel.innerHTML = `
+        <div class="detail-section">
+            <h3>📤 Requête</h3>
+            <div class="kv"><strong>Method:</strong> <span class="method method-${d.method.toLowerCase()}">${d.method}</span></div>
+            <div class="kv"><strong>URL:</strong> <code>${escapeHtml(d.url)}</code></div>
+            <div class="kv"><strong>Time:</strong> ${d.timestamp}</div>
+            ${d.modified ? '<div class="badge-warn">Modifiée</div>' : ''}
+        </div>
+        <div class="detail-section">
+            <h3>📋 Headers</h3>
+            <pre class="code-block">${formatHeaders(d.headers)}</pre>
+        </div>
+        <div class="detail-section">
+            <h3>📦 Body</h3>
+            <pre class="code-block ${d.body_kind}">${highlightBody(d.body, d.body_kind)}</pre>
+            ${renderDecodedBody(d.body_decoded)}
+        </div>
+        <div class="detail-section">
+            <h3>📥 Réponse (${d.status})</h3>
+            <pre class="code-block">${formatHeaders(d.response_headers)}</pre>
+            <pre class="code-block ${d.response_kind}">${highlightBody(d.response_body, d.response_kind)}</pre>
+        </div>
+    `;
+}
+
+function renderDecodedBody(decoded) {
+    if (!decoded || !decoded.params || !Object.keys(decoded.params).length) return '';
+    let html = '<div class="decoded-box"><h4>🔓 Décodé automatiquement</h4>';
+    for (const [key, val] of Object.entries(decoded.params)) {
+        html += `<div class="decoded-param">
+            <span class="param-key">${escapeHtml(key)}</span>
+            <span class="param-eq">=</span>
+            <span class="param-value">${escapeHtml(String(val.decoded || val.original))}</span>`;
+        if (val.variants && val.variants.length) {
+            html += '<div class="variants">';
+            for (const v of val.variants) {
+                html += `<span class="variant-tag">${v.type}</span>`;
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function formatHeaders(headers) {
+    if (!headers || !Object.keys(headers).length) return '(aucun)';
+    return Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n');
+}
+
+function highlightBody(body, kind) {
+    if (!body) return '(vide)';
+    let text = body;
+    if (kind === 'json') {
+        try { text = JSON.stringify(JSON.parse(body), null, 2); } catch (e) {}
+    }
+    return escapeHtml(text);
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+
+async function clearHistory() {
+    if (!confirm('Effacer tout l\'historique ?')) return;
+    await fetch('/api/clear', {method: 'POST'});
+    loadHistory();
+}
+
+document.getElementById('f-search').addEventListener('input', debounce(loadHistory, 300));
+loadHistory();
+
+function debounce(fn, ms) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+</script>
+{% endblock %}
