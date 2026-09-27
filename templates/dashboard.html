@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% set active = 'dashboard' %}
+{% block title %}Dashboard — Burp-Like Web{% endblock %}
+{% block page_title %}📊 Dashboard{% endblock %}
+
+{% block content %}
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value" id="stat-total">0</div>
+        <div class="stat-label">Requêtes totales</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-get">0</div>
+        <div class="stat-label">GET</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-post">0</div>
+        <div class="stat-label">POST</div>
+    </div>
+    <div class="stat-card danger">
+        <div class="stat-value" id="stat-findings">0</div>
+        <div class="stat-label">Findings</div>
+    </div>
+    <div class="stat-card warning">
+        <div class="stat-value" id="stat-modified">0</div>
+        <div class="stat-label">Modifiées</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value" id="stat-pending">0</div>
+        <div class="stat-label">En attente</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>📡 Captures en direct</h2>
+        <div class="live-indicator">
+            <span class="pulse"></span>
+            <span>Live</span>
+        </div>
+    </div>
+    <div class="card-body">
+        <div id="live-captures" class="live-captures">
+            <div class="empty-state">En attente de trafic...</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>🎛️ Contrôles du proxy</h2>
+    </div>
+    <div class="card-body">
+        <div class="controls-row">
+            <div class="control-group">
+                <label>Proxy</label>
+                <div class="status-pill" id="proxy-status">Actif</div>
+            </div>
+            <div class="control-group">
+                <label>Interception</label>
+                <button class="btn btn-primary" id="toggle-intercept">
+                    Désactiver l'interception
+                </button>
+            </div>
+            <div class="control-group">
+                <label>Actions</label>
+                <a href="/api/export/json" class="btn">📥 Export JSON</a>
+                <a href="/api/export/html" class="btn">📄 Export HTML</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshStats() {
+    try {
+        const r = await fetch('/api/stats');
+        const s = await r.json();
+        document.getElementById('stat-total').textContent = s.total;
+        document.getElementById('stat-get').textContent = s.get;
+        document.getElementById('stat-post').textContent = s.post;
+        document.getElementById('stat-findings').textContent = s.findings;
+        document.getElementById('stat-modified').textContent = s.modified;
+        document.getElementById('stat-pending').textContent = s.pending;
+
+        const btn = document.getElementById('toggle-intercept');
+        if (s.intercept_enabled) {
+            btn.textContent = 'Désactiver l\'interception';
+            btn.classList.add('btn-primary');
+            btn.classList.remove('btn-danger');
+        } else {
+            btn.textContent = 'Activer l\'interception';
+            btn.classList.add('btn-danger');
+            btn.classList.remove('btn-primary');
+        }
+
+        const dot = document.getElementById('status-dot');
+        dot.className = 'dot online';
+        document.getElementById('status-text').textContent = 'Proxy actif';
+
+        // Badge pending
+        const badge = document.getElementById('pending-badge');
+        if (s.pending > 0) {
+            badge.textContent = s.pending;
+            badge.style.display = 'inline-block';
+        } else {
+            badge.style.display = 'none';
+        }
+    } catch (e) {
+        document.getElementById('status-text').textContent = 'Erreur';
+        document.getElementById('status-dot').className = 'dot offline';
+    }
+}
+
+async function refreshLive() {
+    try {
+        const r = await fetch('/api/live');
+        const captures = await r.json();
+        const container = document.getElementById('live-captures');
+        if (!captures.length) {
+            container.innerHTML = '<div class="empty-state">En attente de trafic...</div>';
+            return;
+        }
+        container.innerHTML = captures.reverse().map(c => `
+            <div class="live-item">
+                <span class="live-time">${c.timestamp}</span>
+                <span class="method method-${c.method.toLowerCase()}">${c.method}</span>
+                <span class="live-url">${escapeHtml(c.url)}</span>
+                <span class="status status-${Math.floor(c.status / 100)}xx">${c.status}</span>
+                <span class="live-size">${c.size}b</span>
+                <span class="live-duration">${c.time}s</span>
+            </div>
+        `).join('');
+    } catch (e) {}
+}
+
+function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+
+document.getElementById('toggle-intercept').addEventListener('click', async () => {
+    await fetch('/api/intercept/toggle', {method: 'POST'});
+    refreshStats();
+});
+
+refreshStats();
+refreshLive();
+setInterval(refreshStats, 2000);
+setInterval(refreshLive, 1500);
+</script>
+{% endblock %}
