@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Burp-Like Web{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <aside class="sidebar">
+        <div class="logo">
+            <span class="logo-icon">🔷</span>
+            <span class="logo-text">BURP-LIKE</span>
+            <span class="logo-version">v2.0</span>
+        </div>
+        <nav>
+            <a href="/" class="nav-item {% if active == 'dashboard' %}active{% endif %}">
+                <span class="nav-icon">📊</span> Dashboard
+            </a>
+            <a href="/intercept" class="nav-item {% if active == 'intercept' %}active{% endif %}">
+                <span class="nav-icon">🛑</span> Intercept
+                <span class="badge" id="pending-badge" style="display:none">0</span>
+            </a>
+            <a href="/history" class="nav-item {% if active == 'history' %}active{% endif %}">
+                <span class="nav-icon">📜</span> History
+            </a>
+            <a href="/intruder" class="nav-item {% if active == 'intruder' %}active{% endif %}">
+                <span class="nav-icon">⚔️</span> Intruder
+            </a>
+            <a href="/scanner" class="nav-item {% if active == 'scanner' %}active{% endif %}">
+                <span class="nav-icon">🔍</span> Scanner
+            </a>
+            <a href="/repeater" class="nav-item {% if active == 'repeater' %}active{% endif %}">
+                <span class="nav-icon">🔁</span> Repeater
+            </a>
+            <a href="/decoder" class="nav-item {% if active == 'decoder' %}active{% endif %}">
+                <span class="nav-icon">🔤</span> Decoder
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="status-indicator">
+                <span class="dot" id="status-dot"></span>
+                <span id="status-text">Chargement...</span>
+            </div>
+            <div class="info">
+                <small>Proxy: <code>127.0.0.1:8080</code></small><br>
+                <small>CA: <code>~/.mitmproxy/</code></small>
+            </div>
+        </div>
+    </aside>
+
+    <main class="content">
+        <header class="topbar">
+            <h1 class="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+            <div class="topbar-actions">
+                {% block topbar_actions %}{% endblock %}
+            </div>
+        </header>
+        <div class="page-content">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
