@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% set active = 'scanner' %}
+{% block title %}Scanner — Burp-Like Web{% endblock %}
+{% block page_title %}🔍 Scanner Passif{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>Findings</h2>
+        <span class="badge danger" id="findings-count">0</span>
+    </div>
+    <div class="card-body">
+        <div id="findings-container">
+            <div class="empty-state">Aucun finding pour l'instant...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshFindings() {
+    try {
+        const r = await fetch('/api/findings');
+        const findings = await r.json();
+        document.getElementById('findings-count').textContent = findings.length;
+
+        const container = document.getElementById('findings-container');
+        if (!findings.length) {
+            container.innerHTML = '<div class="empty-state">Aucun finding pour l\'instant...</div>';
+            return;
+        }
+
+        container.innerHTML = findings.map(f => `
+            <div class="finding severity-${f.severity.toLowerCase()}">
+                <div class="finding-header">
+                    <span class="badge badge-${f.severity.toLowerCase()}">${f.severity}</span>
+                    <span class="finding-type">${escapeHtml(f.type)}</span>
+                    <span class="finding-time">${f.timestamp.split('T')[1].split('.')[0]}</span>
+                </div>
+                <div class="finding-url">${escapeHtml(f.url)}</div>
+                <div class="finding-desc">${escapeHtml(f.description)}</div>
+                ${f.evidence ? `<pre class="finding-evidence">${escapeHtml(f.evidence)}</pre>` : ''}
+            </div>
+        `).join('');
+    } catch (e) {}
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+
+refreshFindings();
+setInterval(refreshFindings, 3000);
+</script>
+{% endblock %}
