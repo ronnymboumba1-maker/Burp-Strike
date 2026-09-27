@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% set active = 'intercept' %}
+{% block title %}Intercept — Burp-Like Web{% endblock %}
+{% block page_title %}🛑 Interception{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>Requêtes en attente</h2>
+        <span class="badge" id="pending-count">0</span>
+    </div>
+    <div class="card-body">
+        <div id="pending-container">
+            <div class="empty-state">Aucune requête en attente...</div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal d'édition -->
+<div id="edit-modal" class="modal" style="display:none">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>✏️ Modifier la requête</h3>
+            <button class="modal-close" onclick="closeEditModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <input type="hidden" id="edit-key">
+            <div class="form-row">
+                <label>Method</label>
+                <select id="edit-method">
+                    <option>GET</option><option>POST</option><option>PUT</option>
+                    <option>DELETE</option><option>PATCH</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>URL</label>
+                <input type="text" id="edit-url">
+            </div>
+            <div class="form-row">
+                <label>Headers (JSON)</label>
+                <textarea id="edit-headers" rows="6"></textarea>
+            </div>
+            <div class="form-row">
+                <label>Body</label>
+                <textarea id="edit-body" rows="8"></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-success" onclick="submitModify()">✏️ Modifier & Envoyer</button>
+            <button class="btn" onclick="closeEditModal()">Annuler</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let pendingRequests = [];
+
+async function refreshPending() {
+    try {
+        const r = await fetch('/api/pending');
+        pendingRequests = await r.json();
+        document.getElementById('pending-count').textContent = pendingRequests.length;
+
+        const container = document.getElementById('pending-container');
+        if (!pendingRequests.length) {
+            container.innerHTML = '<div class="empty-state">Aucune requête en attente...</div>';
+            return;
+        }
+
+        container.innerHTML = pendingRequests.map((req, i) => `
+            <div class="pending-item">
+                <div class="pending-header">
+                    <span class="method method-${req.method.toLowerCase()}">${req.method}</span>
+                    <span class="pending-url">${escapeHtml(req.url)}</span>
+                </div>
+                <div class="pending-actions">
+                    <button class="btn btn-success" onclick="forwardRequest('${escapeAttr(req.key)}')">➡️ Forward</button>
+                    <button class="btn btn-danger" onclick="dropRequest('${escapeAttr(req.key)}')">❌ Drop</button>
+                    <button class="btn btn-primary" onclick="openEditModal(${i})">✏️ Modifier</button>
+                </div>
+            </div>
+        `).join('');
+    } catch (e) {}
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+function escapeAttr(s) {
+    return String(s).replace(/'/g, "\\'");
+}
+
+async function forwardRequest(key) {
+    await fetch('/api/forward', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key})
+    });
+    refreshPending();
+}
+
+async function dropRequest(key) {
+    await fetch('/api/drop', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key})
+    });
+    refreshPending();
+}
+
+function openEditModal(idx) {
+    const req = pendingRequests[idx];
+    document.getElementById('edit-key').value = req.key;
+    document.getElementById('edit-method').value = req.method;
+    document.getElementById('edit-url').value = req.url;
+    document.getElementById('edit-headers').value = JSON.stringify(req.headers, null, 2);
+    document.getElementById('edit-body').value = req.body;
+    document.getElementById('edit-modal').style.display = 'flex';
+}
+
+function closeEditModal() {
+    document.getElementById('edit-modal').style.display = 'none';
+}
+
+async function submitModify() {
+    const key = document.getElementById('edit-key').value;
+    let headers;
+    try {
+        headers = JSON.parse(document.getElementById('edit-headers').value);
+    } catch (e) {
+        alert('Headers JSON invalide');
+        return;
+    }
+    await fetch('/api/modify', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            key,
+            modifications: {
+                method: document.getElementById('edit-method').value,
+                url: document.getElementById('edit-url').value,
+                headers,
+                body: document.getElementById('edit-body').value,
+            }
+        })
+    });
+    closeEditModal();
+    refreshPending();
+}
+
+refreshPending();
+setInterval(refreshPending, 1000);
+</script>
+{% endblock %}
