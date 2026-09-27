@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% set active = 'intruder' %}
+{% block title %}Intruder — Burp-Like Web{% endblock %}
+{% block page_title %}⚔️ Intruder{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header"><h2>⚙️ Configuration</h2></div>
+    <div class="card-body">
+        <div class="form-grid">
+            <div class="form-row">
+                <label>Type d'attaque</label>
+                <select id="int-type" class="input">
+                    <option value="sniper">Sniper</option>
+                    <option value="battering_ram">Battering Ram</option>
+                    <option value="pitchfork">Pitchfork</option>
+                    <option value="cluster_bomb">Cluster Bomb</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <label>Threads</label>
+                <input type="number" id="int-threads" value="10" min="1" max="50" class="input small">
+            </div>
+        </div>
+        <div class="form-row">
+            <label>URL (utilise §0§, §1§ pour les positions)</label>
+            <input type="text" id="int-url" class="input" placeholder="http://lab.local/api?id=§0§">
+        </div>
+        <div class="form-row">
+            <label>Method</label>
+            <select id="int-method" class="input small">
+                <option>GET</option><option>POST</option>
+            </select>
+        </div>
+        <div class="form-row">
+            <label>Headers (JSON)</label>
+            <textarea id="int-headers" rows="3" class="input">{"User-Agent": "Burp-Like"}</textarea>
+        </div>
+        <div class="form-row">
+            <label>Body (utilise §0§, §1§...)</label>
+            <textarea id="int-body" rows="3" class="input"></textarea>
+        </div>
+        <div class="form-row">
+            <label>Payloads (1 par ligne)</label>
+            <textarea id="int-payloads" rows="6" class="input">admin
+password
+123456
+test
+root</textarea>
+        </div>
+        <div class="button-row">
+            <button class="btn btn-success" onclick="startIntruder()">▶️ Lancer</button>
+            <button class="btn btn-danger" onclick="stopIntruder()">⏹️ Arrêter</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>📊 Progression</h2>
+        <span id="int-progress-text">0 / 0</span>
+    </div>
+    <div class="card-body">
+        <div class="progress-bar"><div class="progress-fill" id="int-progress-fill"></div></div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header"><h2>Résultats</h2></div>
+    <div class="card-body">
+        <table class="data-table">
+            <thead><tr><th>#</th><th>Payload</th><th>Status</th><th>Size</th><th>Time</th><th>Diff</th></tr></thead>
+            <tbody id="int-results"></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let intruderInterval = null;
+let baselineSize = null;
+
+async function startIntruder() {
+    let headers;
+    try { headers = JSON.parse(document.getElementById('int-headers').value); }
+    catch (e) { alert('Headers JSON invalide'); return; }
+
+    const payloadsText = document.getElementById('int-payloads').value;
+    const payloads = payloadsText.split('\n').map(p => p.trim()).filter(Boolean);
+
+    await fetch('/api/intruder/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            url: document.getElementById('int-url').value,
+            method: document.getElementById('int-method').value,
+            headers,
+            body: document.getElementById('int-body').value,
+            payloads,
+            attack_type: document.getElementById('int-type').value,
+            threads: parseInt(document.getElementById('int-threads').value),
+        }),
+    });
+
+    baselineSize = null;
+    document.getElementById('int-results').innerHTML = '';
+    if (intruderInterval) clearInterval(intruderInterval);
+    intruderInterval = setInterval(refreshIntruder, 500);
+}
+
+async function stopIntruder() {
+    await fetch('/api/intruder/stop', {method: 'POST'});
+}
+
+async function refreshIntruder() {
+    const r = await fetch('/api/intruder/status');
+    const d = await r.json();
+
+    document.getElementById('int-progress-text').textContent =
+        `${d.progress.current} / ${d.progress.total}`;
+    document.getElementById('int-progress-fill').style.width =
+        d.progress.total ? `${(d.progress.current / d.progress.total) * 100}%` : '0%';
+
+    if (baselineSize === null && d.results.length) {
+        baselineSize = d.results[0].size;
+    }
+
+    document.getElementById('int-results').innerHTML = d.results.map(r => {
+        const diff = baselineSize && r.size !== baselineSize ? '⚠️ DIFF' : '';
+        return `<tr>
+            <td>${r.idx + 1}</td>
+            <td><code>${escapeHtml(JSON.stringify(r.payloads))}</code></td>
+            <td><span class="status status-${Math.floor(r.status/100)}xx">${r.status}</span></td>
+            <td>${r.size}b</td>
+            <td>${r.time}s</td>
+            <td>${diff}</td>
+        </tr>`;
+    }).join('');
+
+    if (!d.running && intruderInterval) {
+        clearInterval(intruderInterval);
+        intruderInterval = null;
+    }
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+}
+</script>
+{% endblock %}
