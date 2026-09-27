@@ -2,26 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-BURP-LIKE WEB v2.0 — JATHNIEL EDITION
+BURP-LIKE WEB v2.1 — JATHNIEL EDITION
 Proxy d'interception HTTP/HTTPS avec interface web moderne.
 
-Fonctionnalités :
-- Proxy MITM (mitmproxy) HTTP/HTTPS
-- Interface web Flask avec design moderne
-- Interception + modification requêtes
-- Décodage automatique (URL, Base64, HTML, Hex, JSON, JWT)
-- History SQLite avec recherche/filtres
-- Intruder (Sniper, Battering Ram, Pitchfork, Cluster Bomb)
-- Scanner passif (XSS, SQLi, LFI, SSRF, headers)
-- Repeater avec session
-- Decoder multi-format
-- Export JSON / HTML
+Fix v2.1 : event loop asyncio correct pour mitmproxy 10+
 """
 
 import os
 import sys
 import json
 import time
+import asyncio
 import base64
 import html as html_lib
 import re
@@ -29,6 +20,8 @@ import sqlite3
 import threading
 import hashlib
 import urllib.parse
+import subprocess
+import signal
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -65,18 +58,18 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 PROXY_PORT = 8080
 WEB_PORT = 5000
 
+
 # ==================== DÉCODAGE ====================
 
 class Decoder:
     """Décode automatiquement les valeurs (URL, Base64, HTML, Hex, JSON, JWT)."""
 
     @staticmethod
-    def decode_value(value: str) -> dict:
+    def decode_value(value):
         result = {'original': value, 'decoded': value, 'variants': []}
         if not value or not isinstance(value, str):
             return result
 
-        # URL
         try:
             url_decoded = urllib.parse.unquote(value)
             if url_decoded != value:
@@ -85,7 +78,6 @@ class Decoder:
         except Exception:
             pass
 
-        # Base64
         try:
             if re.match(r'^[A-Za-z0-9+/]+=*$', value) and len(value) % 4 == 0 and len(value) > 4:
                 b64 = base64.b64decode(value).decode('utf-8', errors='ignore')
@@ -94,7 +86,6 @@ class Decoder:
         except Exception:
             pass
 
-        # HTML entities
         try:
             html_dec = html_lib.unescape(value)
             if html_dec != value:
@@ -102,7 +93,6 @@ class Decoder:
         except Exception:
             pass
 
-        # Hex
         try:
             if re.match(r'^[0-9a-fA-F]+$', value) and len(value) % 2 == 0 and len(value) >= 4:
                 hex_dec = bytes.fromhex(value).decode('utf-8', errors='ignore')
@@ -111,7 +101,6 @@ class Decoder:
         except Exception:
             pass
 
-        # JSON
         try:
             json_data = json.loads(value)
             result['variants'].append({
@@ -121,7 +110,6 @@ class Decoder:
         except Exception:
             pass
 
-        # JWT
         if value.count('.') == 2:
             try:
                 parts = value.split('.')
@@ -143,19 +131,14 @@ class Decoder:
         return result
 
     @staticmethod
-    def decode_body(body: str, content_type: str = '') -> dict:
-        """Analyse le body : JSON, form-urlencoded, raw."""
+    def decode_body(body, content_type=''):
         result = {
-            'original': body,
-            'decoded': body,
-            'params': {},
-            'type': 'raw',
-            'pretty': body,
+            'original': body, 'decoded': body, 'params': {},
+            'type': 'raw', 'pretty': body,
         }
         if not body:
             return result
 
-        # JSON
         try:
             json_data = json.loads(body)
             result['type'] = 'json'
@@ -173,7 +156,6 @@ class Decoder:
         except Exception:
             pass
 
-        # Form-urlencoded
         try:
             params = urllib.parse.parse_qs(body, keep_blank_values=True)
             if params:
@@ -190,7 +172,6 @@ class Decoder:
         except Exception:
             pass
 
-        # Tentative de décodage global
         decoded = Decoder.decode_value(body)
         if decoded['variants']:
             result['decoded'] = decoded['decoded']
@@ -234,7 +215,7 @@ class Database:
         conn.commit()
         conn.close()
 
-    def insert(self, req: dict):
+    def insert(self, req):
         with self._lock:
             conn = sqlite3.connect(str(self.db_path))
             c = conn.cursor()
@@ -257,16 +238,6 @@ class Database:
             req_id = c.lastrowid
             conn.close()
             return req_id
-
-    def get_recent(self, limit=100):
-        conn = sqlite3.connect(str(self.db_path))
-        c = conn.cursor()
-        c.execute('''SELECT id, method, host, path, status, response_size,
-                    timestamp, content_type_resp
-                    FROM requests ORDER BY id DESC LIMIT ?''', (limit,))
-        rows = c.fetchall()
-        conn.close()
-        return rows
 
     def get_by_id(self, req_id):
         conn = sqlite3.connect(str(self.db_path))
@@ -360,17 +331,15 @@ class Database:
         return rows
 
 
-# ==================== SIGNAL BUS (thread-safe) ====================
+# ==================== SIGNAL BUS ====================
 
 class SignalBus:
-    """Bus d'événements pour communiquer entre mitmproxy et Flask."""
-
     def __init__(self):
-        self.pending_requests = []  # Requêtes interceptées en attente
+        self.pending_requests = []
         self.lock = threading.Lock()
-        self.events = {}  # event_key -> threading.Event
-        self.modifications = {}  # event_key -> modifications
-        self.live_captures = []  # Buffer pour affichage temps réel
+        self.events = {}
+        self.modifications = {}
+        self.live_captures = []
         self.intercept_enabled = True
 
     def add_pending(self, req_data, event_key):
@@ -451,9 +420,7 @@ class PassiveScanner:
         req_body = req_data.get('body', '')
         resp_body = req_data.get('response_body', '')
         resp_headers = req_data.get('response_headers', {})
-        req_headers = req_data.get('headers', {})
 
-        # SQLi
         body_low = resp_body.lower()
         for err in self.SQLI_ERRORS:
             if err.lower() in body_low:
@@ -461,34 +428,29 @@ class PassiveScanner:
                           f"Erreur SQL visible : {err}", resp_body[:300])
                 break
 
-        # XSS reflected
         for key, value in urllib.parse.parse_qs(req_body).items():
             if value and value[0] and len(value[0]) > 3 and value[0] in resp_body:
                 if any(x in value[0].lower() for x in ['<script', 'onerror', 'javascript:']):
                     self._add('MEDIUM', 'XSS Reflected', url,
-                              f"Payload '{value[0][:50]}' refléché dans la réponse", '')
+                              f"Payload '{value[0][:50]}' refléché", '')
                     break
 
-        # LFI
         for pat in self.LFI_PATTERNS:
             if pat in resp_body:
                 self._add('CRITICAL', 'LFI', url,
                           "Contenu de fichier système détecté", pat)
                 break
 
-        # SSRF
         for ind in self.SSRF_INDICATORS:
             if ind in resp_body.lower():
                 self._add('HIGH', 'SSRF', url, f"Indicateur SSRF : {ind}", '')
                 break
 
-        # Security headers
         resp_h_lower = {k.lower(): v for k, v in resp_headers.items()}
         for header, (sev, desc) in self.SECURITY_HEADERS.items():
             if header.lower() not in resp_h_lower:
                 self._add(sev, 'Missing Security Header', url, desc, '')
 
-        # Cookies sans flags
         set_cookie = (resp_headers.get('Set-Cookie', '') or
                       resp_headers.get('set-cookie', ''))
         if set_cookie:
@@ -499,11 +461,9 @@ class PassiveScanner:
                 self._add('LOW', 'Cookie without HttpOnly', url,
                           'Cookie sans flag HttpOnly', set_cookie[:200])
 
-        # Directory listing
         if 'Index of /' in resp_body:
             self._add('MEDIUM', 'Directory Listing', url, 'Listing activé', '')
 
-        # Stack trace
         for pat in ['Traceback (most recent call last)', 'at java.lang.',
                     'System.NullReferenceException', 'Warning: ',
                     'Fatal error:']:
@@ -525,132 +485,169 @@ scanner = PassiveScanner(db)
 # ==================== MITMPROXY ADDON ====================
 
 class InterceptAddon:
-    def __init__(self):
-        self.match_rules = []
-
     def _in_scope(self, host):
-        return True  # À enrichir avec scope
+        return True
 
     def request(self, flow):
-        host = flow.request.host
-        if not self._in_scope(host):
-            return
-
-        body = flow.request.get_text() if flow.request.content else ''
-        content_type = flow.request.headers.get('Content-Type', '')
-
-        # Décoder le body
-        decoded_body = Decoder.decode_body(body, content_type)
-
-        req_data = {
-            'method': flow.request.method,
-            'url': flow.request.pretty_url,
-            'host': host,
-            'path': flow.request.path,
-            'headers': dict(flow.request.headers),
-            'body': body,
-            'content_type_req': content_type,
-            'decoded_body': decoded_body,
-        }
-
-        # Stocker les infos pour la réponse
-        flow.metadata['req_data'] = req_data
-        flow.metadata['start_time'] = time.time()
-
-        if signal_bus.intercept_enabled:
-            event_key = f"{flow.request.pretty_url}_{id(flow)}"
-            event = signal_bus.add_pending(req_data, event_key)
-            event.wait(timeout=300)
-            mods = signal_bus.consume_modification(event_key)
-
-            if mods.get('drop'):
-                flow.response = http.Response.make(
-                    503, b"Dropped by Burp-Like Web",
-                    {"Content-Type": "text/plain"}
-                )
+        try:
+            host = flow.request.host
+            if not self._in_scope(host):
                 return
-            if 'method' in mods:
-                flow.request.method = mods['method']
-            if 'url' in mods:
-                parsed = urllib.parse.urlparse(mods['url'])
-                flow.request.scheme = parsed.scheme
-                flow.request.host = parsed.hostname
-                if parsed.port:
-                    flow.request.port = parsed.port
-                flow.request.path = parsed.path or '/'
-                if parsed.query:
-                    flow.request.path += '?' + parsed.query
-            if 'headers' in mods:
-                flow.request.headers.clear()
-                for k, v in mods['headers'].items():
-                    flow.request.headers[k] = v
-            if 'body' in mods:
-                flow.request.set_text(mods['body'])
+
+            body = flow.request.get_text() if flow.request.content else ''
+            content_type = flow.request.headers.get('Content-Type', '')
+            decoded_body = Decoder.decode_body(body, content_type)
+
+            req_data = {
+                'method': flow.request.method,
+                'url': flow.request.pretty_url,
+                'host': host,
+                'path': flow.request.path,
+                'headers': dict(flow.request.headers),
+                'body': body,
+                'content_type_req': content_type,
+                'decoded_body': decoded_body,
+            }
+
+            flow.metadata['req_data'] = req_data
+            flow.metadata['start_time'] = time.time()
+
+            if signal_bus.intercept_enabled:
+                event_key = f"{flow.request.pretty_url}_{id(flow)}"
+                event = signal_bus.add_pending(req_data, event_key)
+                event.wait(timeout=300)
+                mods = signal_bus.consume_modification(event_key)
+
+                if mods.get('drop'):
+                    flow.response = http.Response.make(
+                        503, b"Dropped by Burp-Like Web",
+                        {"Content-Type": "text/plain"}
+                    )
+                    return
+                if 'method' in mods:
+                    flow.request.method = mods['method']
+                if 'url' in mods:
+                    parsed = urllib.parse.urlparse(mods['url'])
+                    flow.request.scheme = parsed.scheme
+                    flow.request.host = parsed.hostname
+                    if parsed.port:
+                        flow.request.port = parsed.port
+                    flow.request.path = parsed.path or '/'
+                    if parsed.query:
+                        flow.request.path += '?' + parsed.query
+                if 'headers' in mods:
+                    flow.request.headers.clear()
+                    for k, v in mods['headers'].items():
+                        flow.request.headers[k] = v
+                if 'body' in mods:
+                    flow.request.set_text(mods['body'])
+        except Exception as e:
+            print(f"[ADDON] Erreur request: {e}")
 
     def response(self, flow):
-        host = flow.request.host
-        if not self._in_scope(host):
-            return
-
-        req_data = flow.metadata.get('req_data', {})
-        start_time = flow.metadata.get('start_time', time.time())
-
-        resp_body = flow.response.get_text() if flow.response.content else ''
-        resp_headers = dict(flow.response.headers)
-        content_type_resp = flow.response.headers.get('Content-Type', '')
-
-        full_data = {
-            **req_data,
-            'status': flow.response.status_code,
-            'response_headers': resp_headers,
-            'response_body': resp_body,
-            'response_size': len(resp_body),
-            'content_type_resp': content_type_resp,
-            'response_time': time.time() - start_time,
-        }
-
-        # Insérer en DB
-        db.insert(full_data)
-
-        # Scanner passif
         try:
-            scanner.analyze(full_data)
-        except Exception as e:
-            print(f"[SCANNER] Erreur: {e}")
+            host = flow.request.host
+            if not self._in_scope(host):
+                return
 
-        # Live capture
-        signal_bus.add_live_capture({
-            'method': full_data.get('method', ''),
-            'url': full_data.get('url', ''),
-            'host': host,
-            'status': full_data['status'],
-            'size': full_data['response_size'],
-            'time': round(full_data['response_time'], 3),
-            'timestamp': datetime.now().strftime('%H:%M:%S'),
-            'content_type': content_type_resp.split(';')[0],
-        })
+            req_data = flow.metadata.get('req_data', {})
+            start_time = flow.metadata.get('start_time', time.time())
+
+            resp_body = flow.response.get_text() if flow.response.content else ''
+            resp_headers = dict(flow.response.headers)
+            content_type_resp = flow.response.headers.get('Content-Type', '')
+
+            full_data = {
+                **req_data,
+                'status': flow.response.status_code,
+                'response_headers': resp_headers,
+                'response_body': resp_body,
+                'response_size': len(resp_body),
+                'content_type_resp': content_type_resp,
+                'response_time': time.time() - start_time,
+            }
+
+            db.insert(full_data)
+
+            try:
+                scanner.analyze(full_data)
+            except Exception as e:
+                print(f"[SCANNER] Erreur: {e}")
+
+            signal_bus.add_live_capture({
+                'method': full_data.get('method', ''),
+                'url': full_data.get('url', ''),
+                'host': host,
+                'status': full_data['status'],
+                'size': full_data['response_size'],
+                'time': round(full_data['response_time'], 3),
+                'timestamp': datetime.now().strftime('%H:%M:%S'),
+                'content_type': content_type_resp.split(';')[0],
+            })
+        except Exception as e:
+            print(f"[ADDON] Erreur response: {e}")
 
 
 # ==================== PROXY SERVER ====================
 
 class ProxyServer(threading.Thread):
+    """Thread qui lance mitmproxy avec son propre event loop asyncio."""
+
     def __init__(self, port=8080):
         super().__init__(daemon=True)
         self.port = port
         self.master = None
         self.addon = None
+        self.loop = None
+        self.ready = threading.Event()
 
     def run(self):
         if not MITM_OK:
+            print("[PROXY] mitmproxy non installé")
             return
-        opts = options.Options(listen_host='127.0.0.1', listen_port=self.port)
-        self.master = DumpMaster(opts, with_termlog=False, with_dumper=False)
-        self.addon = InterceptAddon()
-        self.master.addons.add(self.addon)
+
+        # Créer un NOUVEL event loop asyncio pour ce thread
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+
         try:
-            self.master.run()
+            self.loop.run_until_complete(self._run_master())
         except Exception as e:
             print(f"[PROXY] Erreur: {e}")
+        finally:
+            try:
+                self.loop.close()
+            except Exception:
+                pass
+
+    async def _run_master(self):
+        """Démarre DumpMaster dans l'event loop du thread."""
+        opts = options.Options(
+            listen_host='127.0.0.1',
+            listen_port=self.port,
+        )
+        # DumpMaster accepte le loop en paramètre sur mitmproxy 10+
+        try:
+            self.master = DumpMaster(
+                opts,
+                with_termlog=False,
+                with_dumper=False,
+                loop=self.loop,
+            )
+        except TypeError:
+            # Fallback si le paramètre loop n'existe pas
+            self.master = DumpMaster(
+                opts,
+                with_termlog=False,
+                with_dumper=False,
+            )
+
+        self.addon = InterceptAddon()
+        self.master.addons.add(self.addon)
+        print(f"[PROXY] Démarré sur 127.0.0.1:{self.port}")
+        self.ready.set()
+
+        await self.master.run()
 
     def shutdown(self):
         if self.master:
@@ -666,8 +663,7 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['JSON_SORT_KEYS'] = False
 
 
-# --- Helper : détecte le type de contenu pour coloration ---
-def content_kind(content_type: str, body: str) -> str:
+def content_kind(content_type, body):
     ct = (content_type or '').lower()
     if 'json' in ct:
         return 'json'
@@ -685,8 +681,6 @@ def content_kind(content_type: str, body: str) -> str:
         return 'xml'
     return 'text'
 
-
-# --- Routes UI ---
 
 @app.route('/')
 def dashboard():
@@ -723,8 +717,6 @@ def decoder_page():
     return render_template('decoder.html')
 
 
-# --- API ---
-
 @app.route('/api/stats')
 def api_stats():
     stats = db.stats()
@@ -735,7 +727,6 @@ def api_stats():
 
 @app.route('/api/live')
 def api_live():
-    """Retourne les captures récentes en temps réel."""
     captures = signal_bus.get_live_captures(50)
     return jsonify(captures)
 
@@ -762,7 +753,6 @@ def api_request_detail(req_id):
     if not row:
         return jsonify({'error': 'not found'}), 404
 
-    # Décoder
     try:
         headers = json.loads(row[5] or '{}')
     except Exception:
@@ -776,7 +766,6 @@ def api_request_detail(req_id):
     except Exception:
         decoded_body = Decoder.decode_body(row[6] or '')
 
-    # Décoder aussi la réponse
     resp_body = row[9] or ''
     decoded_resp = Decoder.decode_body(resp_body, row[13] or '')
 
@@ -942,7 +931,6 @@ def api_repeater_send():
         return jsonify({'error': 'URL manquante ou requests non installé'}), 400
 
     try:
-        # Nettoyer l'URL
         url = url.strip().replace('\n', '').replace('\r', '')
 
         r = requests.request(
@@ -952,7 +940,6 @@ def api_repeater_send():
             timeout=30, verify=False, allow_redirects=False,
         )
 
-        # Décoder la réponse
         decoded = Decoder.decode_body(r.text, r.headers.get('Content-Type', ''))
 
         response_data = {
@@ -965,7 +952,6 @@ def api_repeater_send():
             'time': r.elapsed.total_seconds(),
         }
 
-        # Ajouter à l'historique
         db.insert({
             'method': method, 'url': url,
             'host': urllib.parse.urlparse(url).netloc,
@@ -1051,7 +1037,6 @@ intruder_state = {
 
 
 def run_intruder(config):
-    """Exécute l'Intruder."""
     url = config['url']
     method = config['method']
     headers = config['headers']
@@ -1061,7 +1046,6 @@ def run_intruder(config):
     threads = config.get('threads', 5)
     positions = url.count('§') + body.count('§')
 
-    # Générer les combinaisons
     if attack_type == 'sniper':
         combos = []
         for pos in range(positions):
@@ -1143,7 +1127,6 @@ def run_intruder(config):
 def api_intruder_start():
     if intruder_state['running']:
         return jsonify({'error': 'Intruder déjà en cours'}), 400
-
     config = request.get_json() or {}
     threading.Thread(target=run_intruder, args=(config,), daemon=True).start()
     return jsonify({'ok': True})
@@ -1171,24 +1154,30 @@ def run_web():
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║   🔷 BURP-LIKE WEB v2.0 — JATHNIEL EDITION                   ║
+║   🔷 BURP-LIKE WEB v2.1 — JATHNIEL EDITION                   ║
 ║                                                              ║
 ║   Interface web :  http://127.0.0.1:{WEB_PORT}                     ║
 ║   Proxy MITM    :  http://127.0.0.1:{PROXY_PORT}                     ║
 ║                                                              ║
-║   Ouvre ton navigateur sur l'interface web.                  ║
-║   Configure le proxy de ton navigateur sur :                 ║
-║     127.0.0.1:{PROXY_PORT}                                          ║
+║   Ouvre ton navigateur sur http://127.0.0.1:{WEB_PORT}             ║
+║   Configure le proxy sur 127.0.0.1:{PROXY_PORT}                    ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 """)
-    app.run(host='0.0.0.0', port=WEB_PORT, debug=False, use_reloader=False, threaded=True)
+    app.run(
+        host='0.0.0.0', port=WEB_PORT,
+        debug=False, use_reloader=False,
+        threaded=True,
+    )
 
 
 def main():
+    # Lancer le proxy dans un thread dédié (avec son propre event loop)
     proxy = ProxyServer(port=PROXY_PORT)
     proxy.start()
-    print(f"[PROXY] Démarré sur 127.0.0.1:{PROXY_PORT}")
+
+    # Attendre que le proxy soit prêt (max 5s)
+    proxy.ready.wait(timeout=5)
 
     try:
         run_web()
